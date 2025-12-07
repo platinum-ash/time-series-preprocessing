@@ -3,6 +3,7 @@ Core business logic for preprocessing time series data.
 """
 from typing import Optional
 import pandas as pd
+import json
 from .models import TimeSeriesData, PreprocessingConfig
 from .ports import (
     ITimeSeriesRepository,
@@ -42,14 +43,14 @@ class PreprocessingService:
         config: PreprocessingConfig
     ) -> TimeSeriesData:
         """
-        Execute the complete preprocessing pipeline.
+        Execute the complete preprocessing pipeline with feature engineering.
         
         Args:
             series_id: Unique identifier for the time series
             config: Preprocessing configuration
             
         Returns:
-            Preprocessed time series data
+            Preprocessed time series data with features
         """
         try:
             self.logger.info(f"Starting preprocessing for series: {series_id}")
@@ -92,7 +93,14 @@ class PreprocessingService:
                     f"using {config.aggregation_method.value}"
                 )
             
-            # Step 5: Save preprocessed data
+            # Step 5: Feature Engineering
+            features_dict = self._create_features_dict(data, config)
+            
+            # Attach features to the data
+            data = self._attach_features_to_data(data, features_dict)
+            self.logger.info(f"Created {len(features_dict)} feature columns")
+            
+            # Step 6: Save preprocessed data with features
             success = self.repository.save_preprocessed_data(series_id, data)
             if success:
                 self.logger.info("Preprocessing completed successfully")
@@ -104,6 +112,102 @@ class PreprocessingService:
         except Exception as e:
             self.logger.error(f"Preprocessing failed for {series_id}", e)
             raise
+    
+    def _create_features_dict(
+        self, 
+        data: TimeSeriesData, 
+        config: PreprocessingConfig
+    ) -> dict:
+        """
+        Create all features and organize them into a dictionary structure.
+        
+        Returns:
+            Dictionary mapping feature names to their DataFrames
+        """
+        features = {}
+        
+        # Debug: Log what config values we have
+        self.logger.info(f"Feature config - lag_features: {config.lag_features}")
+        self.logger.info(f"Feature config - rolling_window_sizes: {config.rolling_window_sizes}")
+        
+        # Add lag features
+        if config.lag_features:
+            lag_df = self.feature_engineer.create_lag_features(
+                data, 
+                config.lag_features
+            )
+            self.logger.info(f"Lag features shape: {lag_df.shape}, columns: {lag_df.columns.tolist()}")
+            for col in lag_df.columns:
+                features[col] = lag_df[col]
+            self.logger.info(f"Created {len(config.lag_features)} lag features")
+        
+        # Add rolling features
+        if config.rolling_window_sizes:
+            rolling_df = self.feature_engineer.create_rolling_features(
+                data, 
+                config.rolling_window_sizes
+            )
+            self.logger.info(f"Rolling features shape: {rolling_df.shape}, columns: {rolling_df.columns.tolist()}")
+            for col in rolling_df.columns:
+                features[col] = rolling_df[col]
+            self.logger.info(
+                f"Created rolling features for {len(config.rolling_window_sizes)} windows"
+            )
+        
+        # Add time-based features
+        time_df = self.feature_engineer.create_time_features(data)
+        self.logger.info(f"Time features shape: {time_df.shape}, columns: {time_df.columns.tolist()}")
+        for col in time_df.columns:
+            features[col] = time_df[col]
+        self.logger.info("Created time-based features")
+        
+        # Debug: Log total features created
+        self.logger.info(f"Total features dictionary keys: {list(features.keys())}")
+        
+        return features
+    
+    def _attach_features_to_data(
+        self, 
+        data: TimeSeriesData, 
+        features_dict: dict
+    ) -> TimeSeriesData:
+        """
+        Attach engineered features to the TimeSeriesData object.
+        
+        Features are stored as JSONB in the database, one JSON object per timestamp.
+        """
+        df = data.to_dataframe()
+        
+        # Debug log
+        self.logger.info(f"Original dataframe shape: {df.shape}")
+        self.logger.info(f"Features dict has {len(features_dict)} keys")
+        
+        # Create a features column with JSON objects for each row
+        if features_dict:
+            # Convert the features dict (which has Series as values) into a DataFrame
+            features_df = pd.DataFrame(features_dict)
+            
+            self.logger.info(f"Features dataframe shape: {features_df.shape}")
+            self.logger.info(f"Features dataframe columns: {features_df.columns.tolist()}")
+            
+            # Convert each row to a dictionary (JSON object)
+            # Handle NaN values by converting to None
+            df['features'] = features_df.apply(
+                lambda row: {k: (None if pd.isna(v) else float(v) if isinstance(v, (int, float)) else v) 
+                            for k, v in row.to_dict().items()}, 
+                axis=1
+            )
+            
+            self.logger.info(f"Sample feature object: {df['features'].iloc[0]}")
+        else:
+            # Empty features if none were created
+            self.logger.warning("No features were created, using empty dict")
+            df['features'] = [{}] * len(df)
+        
+        # Update the data object with the features column
+        data = TimeSeriesData.from_dataframe(df, data.metadata)
+        
+        return data
     
     def create_features(
         self, 

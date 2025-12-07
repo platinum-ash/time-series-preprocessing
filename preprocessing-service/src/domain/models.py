@@ -1,10 +1,10 @@
 """
 Domain models for the preprocessing service.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import pandas as pd
 
 
@@ -35,28 +35,39 @@ class AggregationMethod(Enum):
 
 @dataclass
 class TimeSeriesData:
-    """
-    Core domain model representing time series data.
-    """
+    """Domain model for time series data"""
     timestamps: List[datetime]
     values: List[float]
-    metadata: Dict[str, Any]
-    
-    def to_dataframe(self) -> pd.DataFrame:
-        """Convert to pandas DataFrame for processing"""
-        return pd.DataFrame({
-            'timestamp': self.timestamps,
-            'value': self.values
-        })
+    metadata: dict = field(default_factory=dict)
+    features: Optional[List[dict]] = None  # ADD THIS
     
     @classmethod
-    def from_dataframe(cls, df: pd.DataFrame, metadata: Dict[str, Any] = None):
-        """Create from pandas DataFrame"""
+    def from_dataframe(cls, df: pd.DataFrame, metadata: dict = None) -> 'TimeSeriesData':
+        """Create TimeSeriesData from DataFrame"""
+        # Extract features if present
+        features = None
+        if 'features' in df.columns:
+            features = df['features'].tolist()
+        
         return cls(
             timestamps=df['timestamp'].tolist(),
             values=df['value'].tolist(),
-            metadata=metadata or {}
+            metadata=metadata or {},
+            features=features
         )
+    
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert to pandas DataFrame for processing"""
+        df = pd.DataFrame({
+            'timestamp': self.timestamps,
+            'value': self.values
+        })
+        
+        # Add features if they exist
+        if self.features is not None:
+            df['features'] = self.features
+        
+        return df
     
     def __len__(self):
         return len(self.values)
