@@ -5,10 +5,10 @@ Configures and provides all service dependencies.
 import os
 from src.domain.service import PreprocessingService
 from src.adapters.repository import TimescaleDBRepository
-from src.adapters.missing_values import PandasMissingValueHandler
+from src.adapters.missing_values import MissingValueHandler
 from src.adapters.outlier_detection import StatisticalOutlierDetector
-from src.adapters.feature_engineering import PandasFeatureEngineer
-from src.adapters.resampling import PandasResampler
+from src.adapters.feature_engineering import FeatureEngineer
+from src.adapters.resampling import Resampler
 from src.adapters.logging import PythonLogger
 
 
@@ -25,10 +25,10 @@ def get_preprocessing_service() -> PreprocessingService:
     
     # Initialize adapters
     repository = TimescaleDBRepository(db_connection)
-    missing_handler = PandasMissingValueHandler()
+    missing_handler = MissingValueHandler()
     outlier_detector = StatisticalOutlierDetector()
-    feature_engineer = PandasFeatureEngineer()
-    resampler = PandasResampler()
+    feature_engineer = FeatureEngineer()
+    resampler = Resampler()
     logger = PythonLogger("preprocessing-api")
     
     # Create and return service

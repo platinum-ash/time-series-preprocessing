@@ -60,7 +60,7 @@ class PreprocessingService:
             original_count = len(data)
             self.logger.info(f"Retrieved {original_count} data points")
             
-            # Step 2: Handle missing values
+            # Step 2: Handle missing values (apply to all OHLCV columns)
             data = self.missing_handler.handle_missing(
                 data, 
                 config.interpolation_method
@@ -69,11 +69,12 @@ class PreprocessingService:
                 f"Missing values handled using {config.interpolation_method.value}"
             )
             
-            # Step 3: Detect and remove outliers
+            # Step 3: Detect and remove outliers (based on configured price column)
             data = self.outlier_detector.detect_and_remove(
                 data, 
                 config.outlier_method, 
-                config.outlier_threshold
+                config.outlier_threshold,
+                config.price_column
             )
             removed_count = original_count - len(data)
             self.logger.info(
@@ -129,6 +130,7 @@ class PreprocessingService:
         # Debug: Log what config values we have
         self.logger.info(f"Feature config - lag_features: {config.lag_features}")
         self.logger.info(f"Feature config - rolling_window_sizes: {config.rolling_window_sizes}")
+        self.logger.info(f"Feature config - price_column: {config.price_column}")
         
         # Add lag features
         if config.lag_features:
@@ -161,8 +163,45 @@ class PreprocessingService:
             features[col] = time_df[col]
         self.logger.info("Created time-based features")
         
+        # Add OHLCV-specific features
+        ohlcv_features = self._create_ohlcv_features(data)
+        for col in ohlcv_features.columns:
+            features[col] = ohlcv_features[col]
+        self.logger.info(f"Created {len(ohlcv_features.columns)} OHLCV-specific features")
+        
         # Debug: Log total features created
         self.logger.info(f"Total features dictionary keys: {list(features.keys())}")
+        
+        return features
+    
+    def _create_ohlcv_features(self, data: TimeSeriesData) -> pd.DataFrame:
+        """
+        Create OHLCV-specific technical features.
+        
+        Returns:
+            DataFrame with OHLCV-derived features
+        """
+        df = data.to_dataframe()
+        features = pd.DataFrame(index=df.index)
+        
+        # Price range features
+        features['price_range'] = df['high'] - df['low']
+        features['price_range_pct'] = (df['high'] - df['low']) / df['close'] * 100
+        
+        # Body and wick features (candlestick analysis)
+        features['body'] = df['close'] - df['open']
+        features['body_pct'] = (df['close'] - df['open']) / df['open'] * 100
+        features['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
+        features['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
+        
+        # Price position within range
+        features['close_position'] = (df['close'] - df['low']) / (df['high'] - df['low'])
+        
+        # Volume-weighted features
+        features['vwap'] = (df['high'] + df['low'] + df['close']) / 3 * df['volume']
+        
+        # Typical price (used in many technical indicators)
+        features['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
         
         return features
     
@@ -260,6 +299,11 @@ class PreprocessingService:
             df = pd.concat([df, time_df], axis=1)
             self.logger.info("Created time-based features")
             
+            # Add OHLCV-specific features
+            ohlcv_features = self._create_ohlcv_features(data)
+            df = pd.concat([df, ohlcv_features], axis=1)
+            self.logger.info("Created OHLCV-specific features")
+            
             self.logger.info(f"Feature creation completed: {len(df.columns)} total features")
             return df
             
@@ -278,19 +322,32 @@ class PreprocessingService:
             data = self.repository.get_raw_data(series_id)
             df = data.to_dataframe()
             
+            # Calculate statistics for each OHLCV column
+            ohlcv_stats = {}
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                ohlcv_stats[col] = {
+                    'missing_count': int(df[col].isna().sum()),
+                    'missing_percentage': float((df[col].isna().sum() / len(df)) * 100),
+                    'mean': float(df[col].mean()),
+                    'std': float(df[col].std()),
+                    'min': float(df[col].min()),
+                    'max': float(df[col].max())
+                }
+            
             validation = {
                 'total_points': len(df),
-                'missing_values': int(df['value'].isna().sum()),
-                'missing_percentage': float((df['value'].isna().sum() / len(df)) * 100),
                 'date_range': {
                     'start': df['timestamp'].min().isoformat(),
                     'end': df['timestamp'].max().isoformat()
                 },
-                'value_stats': {
-                    'mean': float(df['value'].mean()),
-                    'std': float(df['value'].std()),
-                    'min': float(df['value'].min()),
-                    'max': float(df['value'].max())
+                'ohlcv_stats': ohlcv_stats,
+                'data_quality_checks': {
+                    'high_ge_low': int((df['high'] >= df['low']).sum()),
+                    'high_ge_open': int((df['high'] >= df['open']).sum()),
+                    'high_ge_close': int((df['high'] >= df['close']).sum()),
+                    'low_le_open': int((df['low'] <= df['open']).sum()),
+                    'low_le_close': int((df['low'] <= df['close']).sum()),
+                    'volume_positive': int((df['volume'] > 0).sum())
                 }
             }
             
